@@ -1,8 +1,8 @@
 <?php
-
 namespace App\Livewire;
 
 use App\Models\Order;
+use App\Models\ShippingMethod;
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Url;
 use Livewire\Component;
@@ -14,35 +14,45 @@ class SuccessPage extends Component
 {
     #[Url]
     public $session_id;
+
     public function render()
     {
-        $latest_order =Order::with('address')->where('user_id',auth()->user()->id)->latest()->first();
-        if($this->session_id){
-            Stripe::setApiKey(env('STRIPE_SECRET'));
-            $session_info =Session::retrieve($this->session_id);
-
-            if($session_info->payment_status !== 'paid'){
-                $latest_order->payment_status = 'failed';
-                $latest_order->save();
-                return redirect()->route('cancel');
-
-            }else if($session_info->payment_status === 'paid'){
-                    $latest_order->payment_status = 'paid';
-                    $latest_order->save();
+        $latest_order = Order::with('address')->where('user_id', auth()->user()->id)->latest()->first();
+        $shipping_method_cost = '';
+        if ($latest_order) {
+            $shipping_method_id = $latest_order->shipping_method_id;
+            $shipping_method = ShippingMethod::find($shipping_method_id);
+            if ($shipping_method) {
+                $shipping_method_cost = $shipping_method->cost;
+            }
+        }
+        $shipping_method_name = '';
+        if ($latest_order) {
+            $shipping_method_id = $latest_order->shipping_method_id;
+            $shipping_method = ShippingMethod::find($shipping_method_id);
+            if ($shipping_method) {
+                $shipping_method_name = $shipping_method->name;
             }
         }
 
-        // Check if the shipping method is J&T or other specific shipping methods
-        if($latest_order->shipping_method_id == 1){
-            $latest_order->shipping_method_id = 'J&T';
-        } else if($latest_order->shipping_method_id == 2){
-            $latest_order->shipping_method_id = 'Other Shipping Method 1';
-        } else if($latest_order->shipping_method_id == 3){
-            $latest_order->shipping_method_id = 'Other Shipping Method 2';
+        if ($this->session_id) {
+            Stripe::setApiKey(env('STRIPE_SECRET'));
+            $session_info = Session::retrieve($this->session_id);
+
+            if ($session_info->payment_status !== 'paid') {
+                $latest_order->payment_status = 'failed';
+                $latest_order->save();
+                return redirect()->route('cancel');
+            } else if ($session_info->payment_status === 'paid') {
+                $latest_order->payment_status = 'paid';
+                $latest_order->save();
+            }
         }
 
-        return view('livewire.success-page' ,[
+        return view('livewire.success-page', [
+            'shipping_method_cost' => $shipping_method_cost,
             'order' => $latest_order,
+            'shipping_method_name' => $shipping_method_name,
         ]);
     }
 }

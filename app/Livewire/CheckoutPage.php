@@ -9,7 +9,7 @@ use App\Models\Order;
 use App\Models\ShippingMethod;
 use Illuminate\Support\Facades\Mail;
 use Livewire\Component;
-use Stripe\Checkout\Session as CheckoutSession;
+use Stripe\Checkout\Session;
 use Stripe\Stripe;
 
 class CheckoutPage extends Component
@@ -30,19 +30,20 @@ class CheckoutPage extends Component
 
     public function mount()
     {
-
-        $firstShippingMethod = ShippingMethod::first();
-        if ($firstShippingMethod) {
-            $this->shipping_method_id = $firstShippingMethod->id;
+        $cartItems = CartManagement::getCartItemsFromCookie();
+        if (count($cartItems) == 0) {
+            return redirect('/products');
         }
     }
 
     public function placeOrder()
     {
-        if ($this->select_shipping) {
-            $this->shipping_method_id = $this->select_shipping;
-        }
+        $redirect_url = '';
 
+        // Mendapatkan semua item dalam keranjang belanja
+        $cartItems = CartManagement::getCartItemsFromCookie();
+
+        // Validasi data pesanan
         $this->validate([
             'first_name' => 'required',
             'last_name' => 'required',
@@ -55,70 +56,92 @@ class CheckoutPage extends Component
             'shipping_method_id' => 'required|exists:shipping_methods,id',
         ]);
 
+        // Mendapatkan metode pengiriman yang dipilih
+        $selectedShippingMethod = ShippingMethod::findOrFail($this->shipping_method_id);
 
-        $cartItems = CartManagement::getCartItemsFromCookie();
+        // Menghitung biaya pengiriman
+        $shippingCost = $selectedShippingMethod->cost;
 
+        // Simpan pesanan
+        $order = new Order();
+        $order->user_id = auth()->user()->id;
+        $order->grand_total = CartManagement::calculateGrandTotal($cartItems) + $shippingCost; // Total termasuk biaya pengiriman
+        $order->sub_total = CartManagement::sub_total($cartItems);
+        $order->payment_status = 'pending';
+        $order->status = 'new';
+        $order->currency = 'usd';
+        $order->shipping_amount = $shippingCost; // Menyimpan biaya pengiriman
+        $order->shipping_method_id = $this->shipping_method_id;
+        $order->payment_method = $this->payment_method;
+        $order->notes = 'Order placed by ' . auth()->user()->name;
+        $order->save();
 
-        $shippingMethod = ShippingMethod::find($this->shipping_method_id);
+        // Simpan alamat pengiriman
+        $address = new Address();
+        $address->first_name = $this->first_name;
+        $address->last_name = $this->last_name;
+        $address->street_address = $this->street_address;
+        $address->phone = $this->phone;
+        $address->city = $this->city;
+        $address->state = $this->state;
+        $address->zip_code = $this->zip_code;
+        $address->order_id = $order->id;
+        $address->save();
 
-
-        $grandTotal = CartManagement::calculateGrandTotal($cartItems) + $shippingMethod->cost;
-
+        // Jika pembayaran menggunakan Stripe
         if ($this->payment_method == 'stripe') {
+            Stripe::setApiKey(env('STRIPE_SECRET'));
 
-            $redirectUrl = $this->createStripeCheckoutSession($grandTotal, $cartItems);
-        } else {
+            $lineItems = [];
 
-            $redirectUrl = route('success');
-        }
-
-        return redirect($redirectUrl);
-    }
-
-    public function createStripeCheckoutSession($total, $cartItems)
-    {
-        Stripe::setApiKey(env('STRIPE_SECRET'));
-
-
-        foreach ($cartItems as $item) {
-            $lineItems[] = [
-                'price_data' => [
-                    'currency' => 'usd',
-                    'unit_amount' => $item['unit_amount'] * 100,
-                    'product_data' => [
-                        'name' => $item['name'],
+            // Tambahkan barang-barang dari keranjang belanja sebagai line items
+            foreach ($cartItems as $item) {
+                $lineItems[] = [
+                    'price_data' => [
+                        'currency' => 'usd',
+                        'unit_amount' => $item['unit_amount'] * 100, // Harga barang dalam sen (cent)
+                        'product_data' => [
+                            'name' => $item['name'],
+                        ],
                     ],
-                ],
-                'quantity' => $item['quantity'],
-            ];
+                    'quantity' => $item['quantity'],
+                ];
+            }
+
+            // Tambahkan informasi biaya pengiriman sebagai line item tambahan jika ada
+            if ($shippingCost > 0) {
+                $lineItems[] = [
+                    'price_data' => [
+                        'currency' => 'usd',
+                        'unit_amount' => $shippingCost * 100, // Biaya pengiriman dalam sen (cent)
+                        'product_data' => [
+                            'name' => ShippingMethod::find($this->shipping_method_id)->name,
+                        ],
+                    ],
+                    'quantity' => 1, // Biaya pengiriman dihitung per pesanan, bukan per item
+                ];
+            }
+
+            // Buat sesi pembayaran Stripe dengan line items yang sudah ditambahkan
+            $sessionCheckout = Session::create([
+                'payment_method_types' => ['card'],
+                'customer_email' => auth()->user()->email,
+                'line_items' => $lineItems,
+                'mode' => 'payment',
+                'success_url' => route('success') . '?session_id={CHECKOUT_SESSION_ID}',
+                'cancel_url' => route('cancel'),
+            ]);
+            $redirect_url = $sessionCheckout->url;
+        } else {
+            $redirect_url = route('success');
         }
 
+        // Hapus item keranjang belanja setelah pesanan berhasil ditempatkan
+        CartManagement::clearCartItems();
 
-        $shippingMethod = ShippingMethod::find($this->shipping_method_id);
-        $lineItems[] = [
-            'price_data' => [
-                'currency' => 'usd',
-                'unit_amount' => $shippingMethod->cost * 100,
-                'product_data' => [
-                    'name' => $shippingMethod->name,
-                ],
-            ],
-            'quantity' => 1,
-        ];
-
-
-        $sessionCheckout = CheckoutSession::create([
-            'payment_method_types' => ['card'],
-            'customer_email' => auth()->user()->email,
-            'line_items' => $lineItems,
-            'mode' => 'payment',
-            'success_url' => route('success') . '?session_id={CHECKOUT_SESSION_ID}',
-            'cancel_url' => route('cancel'),
-        ]);
-
-        return $sessionCheckout->url;
+        // Redirect pengguna ke halaman pembayaran
+        return redirect($redirect_url);
     }
-
 
 
     public function render()
@@ -128,12 +151,10 @@ class CheckoutPage extends Component
         $grandTotal = CartManagement::calculateGrandTotal($cartItems);
         $subTotal = CartManagement::sub_total($cartItems);
 
-
         $selectedShippingMethod = $shippingMethods->firstWhere('id', $this->shipping_method_id);
         $shippingMethodCost = $selectedShippingMethod ? $selectedShippingMethod->cost : 0;
 
-
-        $total = CartManagement::calculateTotal($cartItems, $shippingMethodCost);
+        $total = $grandTotal + $shippingMethodCost;
 
         return view('livewire.checkout-page', [
             'shippingMethodCost' => $shippingMethodCost,
@@ -144,5 +165,4 @@ class CheckoutPage extends Component
             'total' => $total,
         ]);
     }
-
 }

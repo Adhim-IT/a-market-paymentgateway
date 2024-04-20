@@ -58,8 +58,8 @@
                       <p class="text-base leading-4 text-gray-600 dark:text-gray-400">{{ Number::currency(0, 'USD')}}</p>
                     </div>
                     <div class="flex items-center justify-between w-full">
-                      <p class="text-base leading-4 text-gray-800 dark:text-gray-400">Shipping ({{strtoupper($order->shipping_method_id)}})</p>
-                      <p class="text-base leading-4 text-gray-600 dark:text-gray-400">{{ Number::currency($order->shipping_amount, 'USD')}}</p>
+                      <p class="text-base leading-4 text-gray-800 dark:text-gray-400">Shipping ({{strtoupper($shipping_method_name)}})</p>
+                      <p class="text-base leading-4 text-gray-600 dark:text-gray-400">{{ Number::currency($shipping_method_cost, 'USD')}}</p>
                     </div>
                   </div>
                   <div class="flex items-center justify-between w-full">
